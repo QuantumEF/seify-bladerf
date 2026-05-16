@@ -1,9 +1,10 @@
-use anyhow::{Context, Ok};
+use anyhow::Context;
 use bladerf::{
     BladeRF, BladeRfAny, ChannelLayoutRx, ComplexI16, Gain, GainMode, RxChannel, StreamConfig,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use num_complex::Complex;
+use rustradio::sigmf::{Capture, SigMF};
 use std::{
     fs::File,
     io::{BufWriter, Write},
@@ -28,7 +29,22 @@ enum CliGainMode {
     HybridAgc,
 }
 
+const NUM_BUFFERS: u32 = 16;
 const SAMPLES_PER_BLOCK: usize = 8192;
+
+/// AI generated function with human modification
+fn check_precision_loss(val: u64) -> Option<f64> {
+    let float_val = val as f64;
+    let round_trip = float_val as u64;
+
+    let lost_precision = val != round_trip;
+
+    if lost_precision {
+        None
+    } else {
+        Some(float_val)
+    }
+}
 
 /// Simple program to receive samples from a bladeRF and write them to a file.
 ///
@@ -67,7 +83,7 @@ struct Args {
     ///
     /// Leaving unset attemps to configure AGC
     #[arg(long, short = 'g', value_parser = clap::value_parser!(i32).range(0..=60))]
-    gain: Option<i32>,
+    gain: Option<Gain>,
 
     /// Bladerf Gain Mode
     ///
@@ -150,37 +166,15 @@ fn main() -> anyhow::Result<()> {
 
     log::debug!("Sample rate set to {}", args.samplerate);
 
-    if let Some(gain) = args.gain {
-        dev.set_gain_mode(channel.into(), GainMode::Manual)
+    let (set_gain_mode, set_gain) = if let Some(gain) = args.gain {
+        let set_gain_mode = GainMode::Manual;
+        dev.set_gain_mode(channel.into(), set_gain_mode)
             .with_context(|| "Unable to set manual gain mode")?;
-
-        let get_gain_mode = dev
-            .get_gain_mode(channel.into())
-            .with_context(|| "Unable to get the gain mode for a sanity check")?;
-        if get_gain_mode != GainMode::Manual {
-            log::warn!(
-                "Gain mode requested, {:?}, does not match the set gain mode, {:?}",
-                GainMode::Manual,
-                get_gain_mode
-            );
-        }
-        log::debug!("Gain mode set to {:?}", get_gain_mode);
 
         dev.set_gain(channel.into(), gain)
             .with_context(|| format!("Unable to set the RX gain to {gain} dB"))?;
 
-        let get_gain = dev
-            .get_gain(channel.into())
-            .with_context(|| "Unable to get the gain for a sanity check")?;
-
-        if get_gain != gain {
-            log::warn!(
-                "Gain requested, {}, does not match the set gain, {}",
-                gain,
-                get_gain
-            );
-        }
-        log::debug!("RX gain set to {} dB", gain);
+        (set_gain_mode, Some(gain))
     } else {
         let gain_mode = match args.gain_mode {
             CliGainMode::Default => GainMode::Default,
@@ -191,28 +185,92 @@ fn main() -> anyhow::Result<()> {
         dev.set_gain_mode(channel.into(), gain_mode)
             .with_context(|| format!("Unable to set gain mode of {:?}", args.gain_mode))?;
 
-        let get_gain_mode = dev
-            .get_gain_mode(channel.into())
-            .with_context(|| "Unable to get the gain mode for a sanity check")?;
-        if get_gain_mode != gain_mode {
+        (gain_mode, None)
+    };
+
+    let get_gain = dev
+        .get_gain(channel.into())
+        .with_context(|| "Unable to get the gain for a sanity check")?;
+
+    if let Some(gain) = set_gain {
+        if get_gain != gain {
             log::warn!(
-                "Gain mode requested, {:?}, does not match the set gain mode, {:?}",
-                GainMode::Manual,
-                get_gain_mode
+                "Gain requested, {}, does not match the set gain, {}",
+                gain,
+                get_gain
             );
         }
-        log::debug!("Gain mode set to {:?}", get_gain_mode);
     }
+    log::debug!("RX gain set to {} dB", get_gain);
 
-    let config = StreamConfig::new(16, SAMPLES_PER_BLOCK, 8, Duration::from_secs(3))
+    let get_gain_mode = dev
+        .get_gain_mode(channel.into())
+        .with_context(|| "Unable to get the gain mode for a sanity check")?;
+    if get_gain_mode != set_gain_mode {
+        log::warn!(
+            "Gain mode requested, {:?}, does not match the set gain mode, {:?}",
+            GainMode::Manual,
+            get_gain_mode
+        );
+    }
+    log::debug!("Gain mode set to {:?}", get_gain_mode);
+
+    let config = StreamConfig::new(NUM_BUFFERS, SAMPLES_PER_BLOCK, 8, Duration::from_secs(3))
         .with_context(|| "Cannot Create Sync Config")?;
     let layout = ChannelLayoutRx::SISO(channel);
     let reciever = dev
         .rx_streamer::<ComplexI16>(config, layout)
         .with_context(|| "Cannot Get Streamer")?;
 
-    let file = File::create(args.outfile).with_context(|| "Cannot Open Output File")?;
-    let mut file_buf = BufWriter::new(file);
+    let meta_filename = {
+        let mut name = args.outfile.clone();
+        name.set_extension("sigmf-meta");
+        name
+    };
+
+    let mut meta_file =
+        File::create(meta_filename).with_context(|| "Cannout open output sigmf-meta file")?;
+
+    const BLADERF_SIGMF_SAMPLE_FORMAT: &str = "ci16_le";
+    let mut sigmf_meta = SigMF::new(BLADERF_SIGMF_SAMPLE_FORMAT.to_owned());
+
+    sigmf_meta.global.core_author = None;
+    sigmf_meta.global.core_hw = Some(dev.get_board_name().to_owned());
+    sigmf_meta.global.core_sample_rate = Some(get_samplerate.into());
+    sigmf_meta.global.core_description = Some(format!(
+        "Bladerf using: channel {channel:?}, gain mode: {get_gain_mode:?}, gain: {get_gain:?}"
+    ));
+    let core_frequency = check_precision_loss(get_freq);
+    if core_frequency.is_none() {
+        log::warn!("Unable to write frequency to sigmf metadata file due to precision loss");
+    };
+    sigmf_meta.captures.push(Capture {
+        core_sample_start: 0,
+        core_global_index: None,
+        core_header_bytes: None,
+        core_frequency,
+        core_datetime: None,
+    });
+
+    let serialized_meta = serde_json::to_string_pretty(&sigmf_meta)
+        .with_context(|| "Unable to serialize metadata")?;
+
+    meta_file
+        .write_all(serialized_meta.as_bytes())
+        .with_context(|| "Unable to write metadata to file")?;
+    meta_file
+        .flush()
+        .with_context(|| "Unable to flush metadata file")?;
+
+    let data_filename = {
+        let mut name = args.outfile.clone();
+        name.set_extension("sigmf-data");
+        name
+    };
+
+    let data_file =
+        File::create(data_filename).with_context(|| "Cannot Open Output sigmf-data File")?;
+    let mut file_buf = BufWriter::new(data_file);
     let mut buffer = [Complex::new(0_i16, 0); SAMPLES_PER_BLOCK];
 
     log::debug!("Opened file for writing");
