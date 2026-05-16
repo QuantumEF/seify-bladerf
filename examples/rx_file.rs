@@ -261,11 +261,18 @@ fn main() -> anyhow::Result<()> {
     const BLADERF_SIGMF_SAMPLE_FORMAT: &str = "ci16_le";
     let mut sigmf_meta = SigMF::new(BLADERF_SIGMF_SAMPLE_FORMAT.to_owned());
 
+    let fw_version = dev
+        .get_firmware_version()
+        .with_context(|| "Unable to read firmware version of device")?;
+    let fpga_version = dev
+        .get_fpga_version()
+        .with_context(|| "Unable to read FPGA version of device")?;
+
     sigmf_meta.global.core_author = None;
     sigmf_meta.global.core_hw = Some(dev.get_board_name().to_owned());
     sigmf_meta.global.core_sample_rate = Some(get_samplerate.into());
     sigmf_meta.global.core_description = Some(format!(
-        "Bladerf using: channel {channel:?}, gain mode: {get_gain_mode:?}, gain: {get_gain:?}, bandwidth: {get_bandwidth}"
+        "Bladerf using: channel {channel:?}, gain mode: {get_gain_mode:?}, gain: {get_gain:?}, bandwidth: {get_bandwidth}, fpga: {fpga_version}, fw_version: {fw_version}"
     ));
     let core_frequency = check_precision_loss(get_freq);
     if core_frequency.is_none() {
