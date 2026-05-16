@@ -1,5 +1,7 @@
 use anyhow::{Context, Ok};
-use bladerf::{BladeRF, BladeRfAny, ChannelLayoutRx, ComplexI16, RxChannel, StreamConfig};
+use bladerf::{
+    BladeRF, BladeRfAny, ChannelLayoutRx, ComplexI16, Gain, GainMode, RxChannel, StreamConfig,
+};
 use indicatif::{ProgressBar, ProgressStyle};
 use num_complex::Complex;
 use std::{
@@ -16,6 +18,14 @@ use clap::{Parser, ValueEnum};
 enum CliChannel {
     Ch0,
     Ch1,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum CliGainMode {
+    Default,
+    FastAttackAgc,
+    SlowAttackAgc,
+    HybridAgc,
 }
 
 const SAMPLES_PER_BLOCK: usize = 8192;
@@ -52,6 +62,20 @@ struct Args {
     /// How long to recieve samples for in seconds. If not provided, will run indefinitely.
     #[arg(long, short = 't')]
     duration: Option<f32>,
+
+    /// RX Gain
+    ///
+    /// Leaving unset attemps to configure AGC
+    #[arg(long, short = 'g', value_parser = clap::value_parser!(i32).range(0..=60))]
+    gain: Option<i32>,
+
+    /// Bladerf Gain Mode
+    ///
+    /// Maps to the gain modes is libbladerf, see https://www.nuand.com/libbladeRF-doc/v2.5.0/group___f_n___g_a_i_n.html#gae7632e9f6b3a5a182ef012c214be0f78 for fore information.
+    /// If unset, BLADERF_GAIN_DEFAULT is used.
+    /// For manual gain control, simply set the `--gain` option.
+    #[arg(long, default_value = "default")]
+    gain_mode: CliGainMode,
 
     /// Disable progress bar
     #[arg(long)]
@@ -104,6 +128,24 @@ fn main() -> anyhow::Result<()> {
         })?;
 
     log::debug!("Sample rate set to {}", args.samplerate);
+
+    if let Some(gain) = args.gain {
+        dev.set_gain_mode(channel.into(), GainMode::Manual)
+            .with_context(|| "Unable to set manual gain mode")?;
+
+        dev.set_gain(channel.into(), gain)
+            .with_context(|| format!("Unable to set the RX gain to {gain} dB"))?;
+        log::debug!("RX gain set to {} dB", gain);
+    } else {
+        let gain_mode = match args.gain_mode {
+            CliGainMode::Default => GainMode::Default,
+            CliGainMode::FastAttackAgc => GainMode::FastAttackAgc,
+            CliGainMode::SlowAttackAgc => GainMode::SlowAttackAgc,
+            CliGainMode::HybridAgc => GainMode::HybridAgc,
+        };
+        dev.set_gain_mode(channel.into(), gain_mode)
+            .with_context(|| format!("Unable to set gain mode of {:?}", args.gain_mode))?;
+    }
 
     let config = StreamConfig::new(16, SAMPLES_PER_BLOCK, 8, Duration::from_secs(3))
         .with_context(|| "Cannot Create Sync Config")?;
