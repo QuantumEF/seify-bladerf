@@ -117,7 +117,17 @@ fn main() -> anyhow::Result<()> {
             )
         })?;
 
-    log::debug!("Frequency set to {}", args.frequency);
+    let get_freq = dev
+        .get_frequency(channel.into())
+        .with_context(|| "Unable to retrieve/sanity check the set frequency")?;
+    if get_freq != args.frequency {
+        log::warn!(
+            "Frequency requested, {}, does not match the set frequency, {}",
+            args.frequency,
+            get_freq
+        );
+    }
+    log::debug!("Frequency set to {}", get_freq);
 
     dev.set_sample_rate(channel.into(), args.samplerate)
         .with_context(|| {
@@ -126,6 +136,17 @@ fn main() -> anyhow::Result<()> {
                 args.samplerate, channel
             )
         })?;
+    let get_samplerate = dev
+        .get_sample_rate(channel.into())
+        .with_context(|| "Unable to retrieve the sample rate for a sanity check")?;
+
+    if get_samplerate != args.samplerate {
+        log::warn!(
+            "Requested sample rate, {}, does not match the sample rate set, {}",
+            args.samplerate,
+            get_samplerate
+        );
+    }
 
     log::debug!("Sample rate set to {}", args.samplerate);
 
@@ -133,8 +154,32 @@ fn main() -> anyhow::Result<()> {
         dev.set_gain_mode(channel.into(), GainMode::Manual)
             .with_context(|| "Unable to set manual gain mode")?;
 
+        let get_gain_mode = dev
+            .get_gain_mode(channel.into())
+            .with_context(|| "Unable to get the gain mode for a sanity check")?;
+        if get_gain_mode != GainMode::Manual {
+            log::warn!(
+                "Gain mode requested, {:?}, does not match the set gain mode, {:?}",
+                GainMode::Manual,
+                get_gain_mode
+            );
+        }
+        log::debug!("Gain mode set to {:?}", get_gain_mode);
+
         dev.set_gain(channel.into(), gain)
             .with_context(|| format!("Unable to set the RX gain to {gain} dB"))?;
+
+        let get_gain = dev
+            .get_gain(channel.into())
+            .with_context(|| "Unable to get the gain for a sanity check")?;
+
+        if get_gain != gain {
+            log::warn!(
+                "Gain requested, {}, does not match the set gain, {}",
+                gain,
+                get_gain
+            );
+        }
         log::debug!("RX gain set to {} dB", gain);
     } else {
         let gain_mode = match args.gain_mode {
@@ -145,6 +190,18 @@ fn main() -> anyhow::Result<()> {
         };
         dev.set_gain_mode(channel.into(), gain_mode)
             .with_context(|| format!("Unable to set gain mode of {:?}", args.gain_mode))?;
+
+        let get_gain_mode = dev
+            .get_gain_mode(channel.into())
+            .with_context(|| "Unable to get the gain mode for a sanity check")?;
+        if get_gain_mode != gain_mode {
+            log::warn!(
+                "Gain mode requested, {:?}, does not match the set gain mode, {:?}",
+                GainMode::Manual,
+                get_gain_mode
+            );
+        }
+        log::debug!("Gain mode set to {:?}", get_gain_mode);
     }
 
     let config = StreamConfig::new(16, SAMPLES_PER_BLOCK, 8, Duration::from_secs(3))
