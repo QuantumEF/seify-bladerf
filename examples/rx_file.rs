@@ -30,6 +30,7 @@ enum CliGainMode {
 }
 
 const NUM_BUFFERS: u32 = 16;
+const NUM_TRANSFERS: u32 = 8;
 const SAMPLES_PER_BLOCK: usize = 8192;
 
 /// AI generated function with human modification
@@ -84,6 +85,10 @@ struct Args {
     /// Leaving unset attemps to configure AGC
     #[arg(long, short = 'g', value_parser = clap::value_parser!(i32).range(0..=60))]
     gain: Option<Gain>,
+
+    /// Bandwidth in MHz
+    #[arg(long, short)]
+    bandwidth: Option<u32>,
 
     /// Bladerf Gain Mode
     ///
@@ -215,8 +220,30 @@ fn main() -> anyhow::Result<()> {
     }
     log::debug!("Gain mode set to {:?}", get_gain_mode);
 
-    let config = StreamConfig::new(NUM_BUFFERS, SAMPLES_PER_BLOCK, 8, Duration::from_secs(3))
-        .with_context(|| "Cannot Create Sync Config")?;
+    if let Some(bandwidth) = args.bandwidth {
+        let set_bw = dev
+            .set_bandwidth(channel.into(), bandwidth)
+            .with_context(|| "Unable to set the bandwidth")?;
+
+        if set_bw != bandwidth {
+            log::warn!(
+                "Requested bandwidth {bandwidth} is not equal to the bandwidth set {set_bw}."
+            );
+        }
+    }
+
+    let get_bandwidth = dev
+        .get_bandwidth(channel.into())
+        .with_context(|| "Unable to get the current device bandwidth")?;
+    log::debug!("Device bandwidth is {get_bandwidth}.");
+
+    let config = StreamConfig::new(
+        NUM_BUFFERS,
+        SAMPLES_PER_BLOCK,
+        NUM_TRANSFERS,
+        Duration::from_secs(3),
+    )
+    .with_context(|| "Cannot Create Sync Config")?;
     let layout = ChannelLayoutRx::SISO(channel);
     let reciever = dev
         .rx_streamer::<ComplexI16>(config, layout)
@@ -238,7 +265,7 @@ fn main() -> anyhow::Result<()> {
     sigmf_meta.global.core_hw = Some(dev.get_board_name().to_owned());
     sigmf_meta.global.core_sample_rate = Some(get_samplerate.into());
     sigmf_meta.global.core_description = Some(format!(
-        "Bladerf using: channel {channel:?}, gain mode: {get_gain_mode:?}, gain: {get_gain:?}"
+        "Bladerf using: channel {channel:?}, gain mode: {get_gain_mode:?}, gain: {get_gain:?}, bandwidth: {get_bandwidth}"
     ));
     let core_frequency = check_precision_loss(get_freq);
     if core_frequency.is_none() {
