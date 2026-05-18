@@ -1,6 +1,7 @@
 use anyhow::Context;
 use bladerf::{
-    BladeRF, BladeRfAny, ChannelLayoutRx, ComplexI16, Gain, GainMode, RxChannel, StreamConfig,
+    version, BladeRF, BladeRfAny, ChannelLayoutRx, ComplexI16, Gain, GainMode, RxChannel,
+    StreamConfig,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use num_complex::Complex;
@@ -267,12 +268,13 @@ fn main() -> anyhow::Result<()> {
     let fpga_version = dev
         .get_fpga_version()
         .with_context(|| "Unable to read FPGA version of device")?;
+    let lib_version = version().with_context(|| "Unable to get libbladerf  library version")?;
 
     sigmf_meta.global.core_author = None;
     sigmf_meta.global.core_hw = Some(dev.get_board_name().to_owned());
     sigmf_meta.global.core_sample_rate = Some(get_samplerate.into());
     sigmf_meta.global.core_description = Some(format!(
-        "Bladerf using: channel {channel:?}, gain mode: {get_gain_mode:?}, gain: {get_gain:?}, bandwidth: {get_bandwidth}, fpga: {fpga_version}, fw_version: {fw_version}"
+        "Bladerf using: channel {channel:?}, gain mode: {get_gain_mode:?}, gain: {get_gain:?}, bandwidth: {get_bandwidth}, fpga: {fpga_version}, fw_version: {fw_version}, libbladerf_version: {lib_version}"
     ));
     let core_frequency = check_precision_loss(get_freq);
     if core_frequency.is_none() {
